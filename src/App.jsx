@@ -67,22 +67,66 @@ function daysInMonth(year, month1based) {
 function formatDateHuman(date) {
   return date.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' });
 }
+// Convierte 'YYYY-MM-DD' a medianoche LOCAL (evita el corrimiento de un día
+// que da `new Date('YYYY-MM-DD')`, que lo interpreta como UTC).
+function parseDateLocal(str) {
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
+// Saldo disponible real: todo lo que ha entrado, menos todo lo que ha
+// salido (gastos y pagos de deudas/servicios, que ya quedan como gasto),
+// menos lo que ya se apartó en metas de ahorro. Es acumulado, no se
+// reinicia cada mes — si ahorraron el mes pasado, ese dinero sigue
+// disponible.
+function computeAvailableBalance(data) {
+  const totalIncome = data.incomes.reduce((s, i) => s + Number(i.amount), 0);
+  const totalExpense = data.expenses.reduce((s, e) => s + Number(e.amount), 0);
+  const totalGoalContrib = data.goalContributions.reduce((s, c) => s + Number(c.amount), 0);
+  return totalIncome - totalExpense - totalGoalContrib;
+}
 
 /* ---------------------------------------------------------
    Obligations (deudas y pagos fijos con vencimiento)
+   scheduleType: 'monthly'  -> vence un día fijo (1-31) de cada mes
+   scheduleType: 'interval' -> se repite cada N días desde el último pago
 --------------------------------------------------------- */
 function computeObligationStatus(ob, obligationPayments) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const y = today.getFullYear();
-  const m = today.getMonth() + 1;
-  const period = `${y}-${String(m).padStart(2, '0')}`;
-  const dim = daysInMonth(y, m);
-  const day = Math.min(Number(ob.dueDay) || 1, dim);
-  const dueDate = new Date(y, m - 1, day);
-  dueDate.setHours(0, 0, 0, 0);
+
+  const payments = obligationPayments
+    .filter(p => p.obligationId === ob.id)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const lastPayment = payments.length ? payments[payments.length - 1] : null;
+
+  let dueDate, period = null, paidThisPeriod = false;
+
+  if (ob.scheduleType === 'interval') {
+    const intervalDays = Number(ob.intervalDays) || 1;
+    dueDate = lastPayment
+      ? addDays(parseDateLocal(lastPayment.date), intervalDays)
+      : parseDateLocal(ob.anchorDate || todayStr());
+    dueDate.setHours(0, 0, 0, 0);
+    // en el esquema por intervalo no existe "ya pagado este período fijo":
+    // al pagar, el ciclo se reinicia y vuelve a contar hacia el próximo pago.
+  } else {
+    const y = today.getFullYear();
+    const m = today.getMonth() + 1;
+    period = `${y}-${String(m).padStart(2, '0')}`;
+    const dim = daysInMonth(y, m);
+    const day = Math.min(Number(ob.dueDay) || 1, dim);
+    dueDate = new Date(y, m - 1, day);
+    dueDate.setHours(0, 0, 0, 0);
+    paidThisPeriod = obligationPayments.some(p => p.obligationId === ob.id && p.period === period);
+  }
+
   const diffDays = Math.round((dueDate - today) / 86400000);
-  const paidThisPeriod = obligationPayments.some(p => p.obligationId === ob.id && p.period === period);
 
   let status;
   if (!ob.active) status = 'terminado';
@@ -91,7 +135,7 @@ function computeObligationStatus(ob, obligationPayments) {
   else if (diffDays <= 5) status = 'proximo';
   else status = 'pendiente';
 
-  return { period, dueDate, diffDays, status, paidThisPeriod };
+  return { period, dueDate, diffDays, status, paidThisPeriod, lastPayment };
 }
 
 function statusMeta(status, diffDays) {
@@ -426,10 +470,18 @@ export default function App() {
     .sort((a, b) => a.info.diffDays - b.info.diffDays)
     .slice(0, 5);
 
+  const availableBalance = computeAvailableBalance(data);
+
   /* ---------- mutation helpers ---------- */
   const addIncome = (payload) => persist({ ...data, incomes: [...data.incomes, { id: uid(), ...payload }] });
   const removeIncome = (id) => persist({ ...data, incomes: data.incomes.filter(i => i.id !== id) });
-  const addExpense = (payload) => persist({ ...data, expenses: [...data.expenses, { id: uid(), ...payload }] });
+  const addExpense = (payload) => {
+    if (Number(payload.amount) > computeAvailableBalance(data)) {
+      setSaveError(`No hay saldo suficiente para registrar ese gasto. Disponible: ${formatCOP(computeAvailableBalance(data))}.`);
+      return;
+    }
+    persist({ ...data, expenses: [...data.expenses, { id: uid(), ...payload }] });
+  };
   const removeExpense = (id) => persist({ ...data, expenses: data.expenses.filter(e => e.id !== id) });
 
   const addObligation = (payload) => {
@@ -454,6 +506,10 @@ export default function App() {
   const markObligationPaid = (obligationId, amount, date, personId) => {
     const ob = data.obligations.find(o => o.id === obligationId);
     if (!ob) return;
+    if (Number(amount) > computeAvailableBalance(data)) {
+      setSaveError(`No hay saldo suficiente para registrar ese pago. Disponible: ${formatCOP(computeAvailableBalance(data))}.`);
+      return;
+    }
     const period = monthKey(date);
     const category = ob.type === 'deuda' ? 'deudas' : ob.category;
     const expense = { id: uid(), personId, category, amount: Number(amount), date, description: ob.name };
@@ -502,6 +558,10 @@ export default function App() {
   const addGoalContribution = (goalId, amount, date) => {
     const goal = data.goals.find(g => g.id === goalId);
     if (!goal) return;
+    if (Number(amount) > computeAvailableBalance(data)) {
+      setSaveError(`No hay saldo suficiente para apartar ese monto. Disponible: ${formatCOP(computeAvailableBalance(data))}.`);
+      return;
+    }
     const newSaved = Number(goal.savedAmount) + Number(amount);
     const goals = data.goals.map(g => g.id === goalId ? { ...g, savedAmount: newSaved } : g);
     const goalContributions = [...data.goalContributions, { id: uid(), goalId, amount: Number(amount), date, personId: profileId }];
@@ -539,6 +599,7 @@ export default function App() {
           <ResumenPage
             month={month} setMonth={setMonth} availableMonths={availableMonths}
             totalIncome={totalIncome} totalExpense={totalExpense} balance={balance}
+            availableBalance={availableBalance}
             expenseByCategory={expenseByCategory} totalDebt={totalDebtRemaining}
             totalGoalsSaved={totalGoalsSaved} totalGoalsTarget={totalGoalsTarget}
             goals={data.goals}
@@ -591,7 +652,7 @@ export default function App() {
       </Modal>
 
       <Modal open={modal === 'gasto'} onClose={() => setModal(null)} title="Registrar gasto">
-        <ExpenseForm defaultPerson={profileId} profiles={data.profiles} onSubmit={(p) => { addExpense(p); setModal(null); }} />
+        <ExpenseForm defaultPerson={profileId} profiles={data.profiles} availableBalance={availableBalance} onSubmit={(p) => { addExpense(p); setModal(null); }} />
       </Modal>
 
       <Modal open={modal === 'nuevaObligacion'} onClose={() => setModal(null)} title="Nueva deuda o pago fijo">
@@ -613,6 +674,7 @@ export default function App() {
             ob={modalObligation}
             profiles={data.profiles}
             defaultPerson={profileId}
+            availableBalance={availableBalance}
             onSubmit={({ amount, date, personId }) => { markObligationPaid(modalObligation.id, amount, date, personId); setModal(null); }}
           />
         )}
@@ -626,6 +688,7 @@ export default function App() {
         <Modal open onClose={() => setModal(null)} title="Agregar a la meta">
           <PaymentForm
             label="Monto a apartar"
+            availableBalance={availableBalance}
             onSubmit={({ amount, date }) => { addGoalContribution(modal.split(':')[1], amount, date); setModal(null); }}
           />
         </Modal>
@@ -690,7 +753,7 @@ function ProximosVencimientos({ upcoming, onMarkPaid }) {
 /* ---------------------------------------------------------
    Resumen page
 --------------------------------------------------------- */
-function ResumenPage({ month, setMonth, availableMonths, totalIncome, totalExpense, balance, expenseByCategory, totalDebt, totalGoalsSaved, totalGoalsTarget, goals, upcoming, onMarkPaid }) {
+function ResumenPage({ month, setMonth, availableMonths, totalIncome, totalExpense, balance, availableBalance, expenseByCategory, totalDebt, totalGoalsSaved, totalGoalsTarget, goals, upcoming, onMarkPaid }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -699,6 +762,14 @@ function ResumenPage({ month, setMonth, availableMonths, totalIncome, totalExpen
       </div>
 
       <ProximosVencimientos upcoming={upcoming} onMarkPaid={onMarkPaid} />
+
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }} className="rounded-2xl p-5 mb-4">
+        <p style={{ color: COLORS.inkSoft }} className="text-sm mb-1">Saldo disponible ahora</p>
+        <p style={{ color: availableBalance >= 0 ? COLORS.teal : COLORS.rust, fontFamily: 'Fraunces, serif' }} className="text-3xl font-semibold mb-1">
+          {formatCOP(availableBalance)}
+        </p>
+        <p style={{ color: COLORS.inkSoft }} className="text-xs">Esto es lo que de verdad pueden gastar hoy — ya descuenta lo apartado en metas.</p>
+      </div>
 
       <div style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }} className="rounded-2xl p-5 mb-4">
         <p style={{ color: COLORS.inkSoft }} className="text-sm mb-1">Balance del mes</p>
@@ -825,17 +896,24 @@ function ObligationCard({ ob, info, payments, onMarkPaid, onUndo, onEdit, onDele
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const meta = statusMeta(info.status, info.diffDays);
   const Icon = meta.Icon;
-  const lastPaymentThisPeriod = payments.filter(p => p.obligationId === ob.id && p.period === info.period).slice(-1)[0];
 
   const hasCuotas = ob.type === 'deuda' && ob.hasCuotas;
   const isRotativo = ob.type === 'deuda' && !ob.hasCuotas;
+  const isInterval = ob.scheduleType === 'interval';
+
+  const canMarkPaid = isInterval ? true : !info.paidThisPeriod;
+  const canUndo = !!info.lastPayment && (isInterval ? true : info.paidThisPeriod);
 
   return (
     <div style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }} className="rounded-xl p-4">
       <div className="flex items-start justify-between mb-2 gap-2">
         <div className="min-w-0">
           <p style={{ color: COLORS.ink }} className="font-medium truncate">{ob.name}</p>
-          <p style={{ color: COLORS.inkSoft }} className="text-xs">Vence el día {ob.dueDay} de cada mes</p>
+          <p style={{ color: COLORS.inkSoft }} className="text-xs">
+            {isInterval
+              ? `Se paga cada ${ob.intervalDays} días · próximo: ${formatDateHuman(info.dueDate)}`
+              : `Vence el día ${ob.dueDay} de cada mes`}
+          </p>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button onClick={() => onEdit(ob.id)} style={{ color: COLORS.inkSoft }}><Pencil size={15} /></button>
@@ -859,7 +937,7 @@ function ObligationCard({ ob, info, payments, onMarkPaid, onUndo, onEdit, onDele
         </>
       )}
       {isRotativo && (
-        <p style={{ color: COLORS.ink }} className="text-sm">Saldo pendiente: <strong>{formatCOP(ob.remainingAmount)}</strong> · pago mínimo {formatCOP(ob.cuotaAmount)}</p>
+        <p style={{ color: COLORS.ink }} className="text-sm">Saldo pendiente: <strong>{formatCOP(ob.remainingAmount)}</strong> · pago esperado {formatCOP(ob.cuotaAmount)}</p>
       )}
       {ob.type === 'servicio' && (
         <p style={{ color: COLORS.ink }} className="text-sm">Monto aproximado: <strong>{formatCOP(ob.cuotaAmount)}</strong></p>
@@ -872,18 +950,19 @@ function ObligationCard({ ob, info, payments, onMarkPaid, onUndo, onEdit, onDele
       </div>
 
       {ob.active && (
-        <div className="mt-3">
-          {!info.paidThisPeriod ? (
+        <div className="mt-3 flex items-center gap-4 flex-wrap">
+          {canMarkPaid && (
             <SecondaryButton onClick={() => onMarkPaid(ob.id)}>
               <CheckCircle2 size={15} /> Marcar como pagado
             </SecondaryButton>
-          ) : (
+          )}
+          {canUndo && (
             <button
-              onClick={() => lastPaymentThisPeriod && onUndo(lastPaymentThisPeriod.id)}
+              onClick={() => onUndo(info.lastPayment.id)}
               style={{ color: COLORS.inkSoft }}
               className="text-sm flex items-center gap-1"
             >
-              <RotateCcw size={14} /> Deshacer pago de este mes
+              <RotateCcw size={14} /> {isInterval ? 'Deshacer último pago' : 'Deshacer pago de este mes'}
             </button>
           )}
         </div>
@@ -1013,12 +1092,13 @@ function IncomeForm({ defaultPerson, profiles, onSubmit }) {
   );
 }
 
-function ExpenseForm({ defaultPerson, profiles, onSubmit }) {
+function ExpenseForm({ defaultPerson, profiles, availableBalance, onSubmit }) {
   const [personId, setPersonId] = useState(defaultPerson);
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState(CATEGORY_DEFS[0].id);
   const [date, setDate] = useState(todayStr());
   const [description, setDescription] = useState('');
+  const exceeds = Number(amount) > availableBalance;
 
   return (
     <div>
@@ -1030,6 +1110,9 @@ function ExpenseForm({ defaultPerson, profiles, onSubmit }) {
       <Field label="Monto">
         <TextInput type="number" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="Ej: 50000" />
       </Field>
+      <p style={{ color: exceeds ? COLORS.rust : COLORS.inkSoft }} className="text-xs -mt-2 mb-3">
+        Disponible: {formatCOP(availableBalance)}{exceeds ? ' — este gasto supera lo disponible.' : ''}
+      </p>
       <Field label="Categoría">
         <Select value={category} onChange={e => setCategory(e.target.value)}>
           {CATEGORY_DEFS.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
@@ -1041,7 +1124,7 @@ function ExpenseForm({ defaultPerson, profiles, onSubmit }) {
       <Field label="Nota (opcional)">
         <TextInput value={description} onChange={e => setDescription(e.target.value)} placeholder="Ej: mercado de la semana" />
       </Field>
-      <PrimaryButton disabled={!amount || Number(amount) <= 0} onClick={() => onSubmit({ personId, amount: Number(amount), category, date, description })}>
+      <PrimaryButton disabled={!amount || Number(amount) <= 0 || exceeds} onClick={() => onSubmit({ personId, amount: Number(amount), category, date, description })}>
         Guardar gasto
       </PrimaryButton>
     </div>
@@ -1057,33 +1140,46 @@ function ObligationForm({ onSubmit }) {
   const [cuotaAmount, setCuotaAmount] = useState('');
   const [remainingAmount, setRemainingAmount] = useState('');
   const [category, setCategory] = useState('vivienda');
+  const [scheduleType, setScheduleType] = useState('monthly');
   const [dueDay, setDueDay] = useState('15');
+  const [intervalDays, setIntervalDays] = useState('15');
+  const [anchorDate, setAnchorDate] = useState(todayStr());
   const [error, setError] = useState('');
 
   const suggestedCuota = totalAmount && totalCuotas ? Math.round(Number(totalAmount) / Number(totalCuotas)) : null;
 
   const submit = () => {
     if (!name.trim()) { setError('Ponle un nombre.'); return; }
-    const day = Number(dueDay);
-    if (!day || day < 1 || day > 31) { setError('El día de vencimiento debe estar entre 1 y 31.'); return; }
+
+    let scheduleFields;
+    if (scheduleType === 'monthly') {
+      const day = Number(dueDay);
+      if (!day || day < 1 || day > 31) { setError('El día de vencimiento debe estar entre 1 y 31.'); return; }
+      scheduleFields = { scheduleType: 'monthly', dueDay: day };
+    } else {
+      const interval = Number(intervalDays);
+      if (!interval || interval < 1) { setError('Ingresa cada cuántos días se paga (ej: 3, 15).'); return; }
+      if (!anchorDate) { setError('Ingresa la fecha del próximo pago.'); return; }
+      scheduleFields = { scheduleType: 'interval', intervalDays: interval, anchorDate };
+    }
 
     if (type === 'deuda' && hasCuotas) {
       if (!totalAmount || Number(totalAmount) <= 0) { setError('Ingresa el monto total de la deuda.'); return; }
       if (!totalCuotas || Number(totalCuotas) <= 0) { setError('Ingresa el número de cuotas.'); return; }
       onSubmit({
-        type, name: name.trim(), hasCuotas: true, dueDay: day,
+        type, name: name.trim(), hasCuotas: true, ...scheduleFields,
         totalAmount: Number(totalAmount), totalCuotas: Number(totalCuotas),
         cuotaAmount: Number(cuotaAmount) || suggestedCuota,
       });
     } else if (type === 'deuda' && !hasCuotas) {
       if (!remainingAmount || Number(remainingAmount) <= 0) { setError('Ingresa el saldo actual de la deuda.'); return; }
       onSubmit({
-        type, name: name.trim(), hasCuotas: false, dueDay: day,
+        type, name: name.trim(), hasCuotas: false, ...scheduleFields,
         remainingAmount: Number(remainingAmount), cuotaAmount: Number(cuotaAmount) || 0,
       });
     } else {
       if (!cuotaAmount || Number(cuotaAmount) <= 0) { setError('Ingresa el monto aproximado.'); return; }
-      onSubmit({ type, name: name.trim(), dueDay: day, category, cuotaAmount: Number(cuotaAmount) });
+      onSubmit({ type, name: name.trim(), ...scheduleFields, category, cuotaAmount: Number(cuotaAmount) });
     }
   };
 
@@ -1127,7 +1223,7 @@ function ObligationForm({ onSubmit }) {
           <Field label="Saldo actual de la deuda">
             <TextInput type="number" inputMode="decimal" value={remainingAmount} onChange={e => setRemainingAmount(e.target.value)} placeholder="Ej: 800000" />
           </Field>
-          <Field label="Pago mínimo mensual">
+          <Field label="Pago mínimo esperado">
             <TextInput type="number" inputMode="decimal" value={cuotaAmount} onChange={e => setCuotaAmount(e.target.value)} placeholder="Ej: 80000" />
           </Field>
         </>
@@ -1140,15 +1236,33 @@ function ObligationForm({ onSubmit }) {
               {CATEGORY_DEFS.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
             </Select>
           </Field>
-          <Field label="Monto aproximado mensual">
+          <Field label="Monto aproximado">
             <TextInput type="number" inputMode="decimal" value={cuotaAmount} onChange={e => setCuotaAmount(e.target.value)} placeholder="Ej: 90000" />
           </Field>
         </>
       )}
 
-      <Field label="Día del mes en que vence (1-31)">
-        <TextInput type="number" inputMode="numeric" value={dueDay} onChange={e => setDueDay(e.target.value)} placeholder="Ej: 15" />
+      <Field label="¿Cada cuánto se paga?">
+        <Select value={scheduleType} onChange={e => setScheduleType(e.target.value)}>
+          <option value="monthly">Un día fijo cada mes (ej: el día 15)</option>
+          <option value="interval">Cada cierto número de días (ej: cada 3 días, cada 15 días)</option>
+        </Select>
       </Field>
+
+      {scheduleType === 'monthly' ? (
+        <Field label="Día del mes en que vence (1-31)">
+          <TextInput type="number" inputMode="numeric" value={dueDay} onChange={e => setDueDay(e.target.value)} placeholder="Ej: 15" />
+        </Field>
+      ) : (
+        <>
+          <Field label="Cada cuántos días se paga">
+            <TextInput type="number" inputMode="numeric" value={intervalDays} onChange={e => setIntervalDays(e.target.value)} placeholder="Ej: 3" />
+          </Field>
+          <Field label="Fecha del próximo pago">
+            <TextInput type="date" value={anchorDate} onChange={e => setAnchorDate(e.target.value)} />
+          </Field>
+        </>
+      )}
 
       {error && <p style={{ color: COLORS.rust }} className="text-sm mb-3">{error}</p>}
       <PrimaryButton onClick={submit}>Guardar</PrimaryButton>
@@ -1158,18 +1272,29 @@ function ObligationForm({ onSubmit }) {
 
 function EditObligationForm({ ob, onSubmit }) {
   const [name, setName] = useState(ob.name);
-  const [dueDay, setDueDay] = useState(String(ob.dueDay));
+  const [scheduleType, setScheduleType] = useState(ob.scheduleType || 'monthly');
+  const [dueDay, setDueDay] = useState(String(ob.dueDay || 15));
+  const [intervalDays, setIntervalDays] = useState(String(ob.intervalDays || 15));
+  const [anchorDate, setAnchorDate] = useState(ob.anchorDate || todayStr());
   const [cuotaAmount, setCuotaAmount] = useState(String(ob.cuotaAmount || ''));
   const [category, setCategory] = useState(ob.category || 'vivienda');
   const [error, setError] = useState('');
 
-  const label = ob.type === 'servicio' ? 'Monto aproximado mensual' : (ob.hasCuotas ? 'Valor de cada cuota' : 'Pago mínimo mensual');
+  const label = ob.type === 'servicio' ? 'Monto aproximado' : (ob.hasCuotas ? 'Valor de cada cuota' : 'Pago mínimo esperado');
 
   const submit = () => {
-    const day = Number(dueDay);
     if (!name.trim()) { setError('Ponle un nombre.'); return; }
-    if (!day || day < 1 || day > 31) { setError('El día debe estar entre 1 y 31.'); return; }
-    const changes = { name: name.trim(), dueDay: day, cuotaAmount: Number(cuotaAmount) || 0 };
+    let scheduleFields;
+    if (scheduleType === 'monthly') {
+      const day = Number(dueDay);
+      if (!day || day < 1 || day > 31) { setError('El día debe estar entre 1 y 31.'); return; }
+      scheduleFields = { scheduleType: 'monthly', dueDay: day, intervalDays: undefined, anchorDate: undefined };
+    } else {
+      const interval = Number(intervalDays);
+      if (!interval || interval < 1) { setError('Ingresa cada cuántos días se paga.'); return; }
+      scheduleFields = { scheduleType: 'interval', intervalDays: interval, anchorDate, dueDay: undefined };
+    }
+    const changes = { name: name.trim(), cuotaAmount: Number(cuotaAmount) || 0, ...scheduleFields };
     if (ob.type === 'servicio') changes.category = category;
     onSubmit(changes);
   };
@@ -1189,19 +1314,40 @@ function EditObligationForm({ ob, onSubmit }) {
       <Field label={label}>
         <TextInput type="number" inputMode="decimal" value={cuotaAmount} onChange={e => setCuotaAmount(e.target.value)} />
       </Field>
-      <Field label="Día del mes en que vence (1-31)">
-        <TextInput type="number" inputMode="numeric" value={dueDay} onChange={e => setDueDay(e.target.value)} />
+      <Field label="¿Cada cuánto se paga?">
+        <Select value={scheduleType} onChange={e => setScheduleType(e.target.value)}>
+          <option value="monthly">Un día fijo cada mes</option>
+          <option value="interval">Cada cierto número de días</option>
+        </Select>
       </Field>
+      {scheduleType === 'monthly' ? (
+        <Field label="Día del mes en que vence (1-31)">
+          <TextInput type="number" inputMode="numeric" value={dueDay} onChange={e => setDueDay(e.target.value)} />
+        </Field>
+      ) : (
+        <>
+          <Field label="Cada cuántos días se paga">
+            <TextInput type="number" inputMode="numeric" value={intervalDays} onChange={e => setIntervalDays(e.target.value)} />
+          </Field>
+          <Field label="Fecha de referencia del próximo pago">
+            <TextInput type="date" value={anchorDate} onChange={e => setAnchorDate(e.target.value)} />
+          </Field>
+          <p style={{ color: COLORS.inkSoft }} className="text-xs mb-3">
+            Solo se usa si todavía no se ha registrado ningún pago de esta obligación; después, el ciclo se cuenta desde el último pago.
+          </p>
+        </>
+      )}
       {error && <p style={{ color: COLORS.rust }} className="text-sm mb-3">{error}</p>}
       <PrimaryButton onClick={submit}>Guardar cambios</PrimaryButton>
     </div>
   );
 }
 
-function MarkPaidForm({ ob, profiles, defaultPerson, onSubmit }) {
+function MarkPaidForm({ ob, profiles, defaultPerson, availableBalance, onSubmit }) {
   const [personId, setPersonId] = useState(defaultPerson);
   const [amount, setAmount] = useState(String(ob.cuotaAmount || ''));
   const [date, setDate] = useState(todayStr());
+  const exceeds = Number(amount) > availableBalance;
 
   return (
     <div>
@@ -1213,11 +1359,14 @@ function MarkPaidForm({ ob, profiles, defaultPerson, onSubmit }) {
       <Field label="Monto pagado">
         <TextInput type="number" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} />
       </Field>
+      <p style={{ color: exceeds ? COLORS.rust : COLORS.inkSoft }} className="text-xs -mt-2 mb-3">
+        Disponible: {formatCOP(availableBalance)}{exceeds ? ' — este pago supera lo disponible.' : ''}
+      </p>
       <Field label="Fecha del pago">
         <TextInput type="date" value={date} onChange={e => setDate(e.target.value)} />
       </Field>
       <p style={{ color: COLORS.inkSoft }} className="text-xs mb-3">Esto también se sumará automáticamente a los gastos del mes.</p>
-      <PrimaryButton disabled={!amount || Number(amount) <= 0} onClick={() => onSubmit({ amount: Number(amount), date, personId })}>
+      <PrimaryButton disabled={!amount || Number(amount) <= 0 || exceeds} onClick={() => onSubmit({ amount: Number(amount), date, personId })}>
         Confirmar pago
       </PrimaryButton>
     </div>
@@ -1247,18 +1396,24 @@ function GoalForm({ onSubmit }) {
   );
 }
 
-function PaymentForm({ onSubmit, label }) {
+function PaymentForm({ onSubmit, label, availableBalance }) {
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(todayStr());
+  const exceeds = availableBalance !== undefined && Number(amount) > availableBalance;
   return (
     <div>
       <Field label={label}>
         <TextInput type="number" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="Ej: 50000" />
       </Field>
+      {availableBalance !== undefined && (
+        <p style={{ color: exceeds ? COLORS.rust : COLORS.inkSoft }} className="text-xs -mt-2 mb-3">
+          Disponible: {formatCOP(availableBalance)}{exceeds ? ' — supera lo disponible.' : ''}
+        </p>
+      )}
       <Field label="Fecha">
         <TextInput type="date" value={date} onChange={e => setDate(e.target.value)} />
       </Field>
-      <PrimaryButton disabled={!amount || Number(amount) <= 0} onClick={() => onSubmit({ amount: Number(amount), date })}>
+      <PrimaryButton disabled={!amount || Number(amount) <= 0 || exceeds} onClick={() => onSubmit({ amount: Number(amount), date })}>
         Guardar
       </PrimaryButton>
     </div>
