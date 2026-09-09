@@ -594,7 +594,7 @@ export default function App() {
         <div style={{ background: COLORS.rustSoft, color: COLORS.rust }} className="mx-5 mt-3 p-3 rounded-lg text-sm">{saveError}</div>
       )}
 
-      <div className="max-w-md mx-auto px-5 pt-4">
+      <div className="max-w-md lg:max-w-6xl mx-auto px-5 pt-4">
         {page === 'resumen' && (
           <ResumenPage
             month={month} setMonth={setMonth} availableMonths={availableMonths}
@@ -755,7 +755,7 @@ function ProximosVencimientos({ upcoming, onMarkPaid }) {
 --------------------------------------------------------- */
 function ResumenPage({ month, setMonth, availableMonths, totalIncome, totalExpense, balance, availableBalance, expenseByCategory, totalDebt, totalGoalsSaved, totalGoalsTarget, goals, upcoming, onMarkPaid }) {
   return (
-    <div>
+    <div className="lg:max-w-2xl lg:mx-auto">
       <div className="flex items-center justify-between mb-4">
         <h2 style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-xl font-semibold">Resumen</h2>
         <MonthSelector month={month} setMonth={setMonth} availableMonths={availableMonths} />
@@ -837,7 +837,7 @@ function MovimientosPage({ month, setMonth, availableMonths, incomes, expenses, 
   ].sort((a, b) => b.date.localeCompare(a.date));
 
   return (
-    <div>
+    <div className="lg:max-w-2xl lg:mx-auto">
       <div className="flex items-center justify-between mb-4">
         <h2 style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-xl font-semibold">Movimientos</h2>
         <MonthSelector month={month} setMonth={setMonth} availableMonths={availableMonths} />
@@ -904,16 +904,26 @@ function ObligationCard({ ob, info, payments, onMarkPaid, onUndo, onEdit, onDele
   const canMarkPaid = isInterval ? true : !info.paidThisPeriod;
   const canUndo = !!info.lastPayment && (isInterval ? true : info.paidThisPeriod);
 
+  // Color e ícono de categoría: para deudas siempre el color de "Deudas y
+  // tarjetas"; para servicios, el de la categoría elegida (luz, pensión...).
+  const catInfo = ob.type === 'servicio' ? catDef(ob.category) : catDef('deudas');
+  const CatIcon = catInfo.icon;
+
   return (
-    <div style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }} className="rounded-xl p-4">
+    <div style={{ background: COLORS.card, border: `1px solid ${COLORS.line}`, borderLeft: `4px solid ${catInfo.color}` }} className="rounded-xl p-4">
       <div className="flex items-start justify-between mb-2 gap-2">
-        <div className="min-w-0">
-          <p style={{ color: COLORS.ink }} className="font-medium truncate">{ob.name}</p>
-          <p style={{ color: COLORS.inkSoft }} className="text-xs">
-            {isInterval
-              ? `Se paga cada ${ob.intervalDays} días · próximo: ${formatDateHuman(info.dueDate)}`
-              : `Vence el día ${ob.dueDay} de cada mes`}
-          </p>
+        <div className="flex items-start gap-3 min-w-0">
+          <span style={{ background: `${catInfo.color}1F`, color: catInfo.color }} className="w-9 h-9 rounded-full flex items-center justify-center shrink-0">
+            <CatIcon size={16} />
+          </span>
+          <div className="min-w-0">
+            <p style={{ color: COLORS.ink }} className="font-medium truncate">{ob.name}</p>
+            <p style={{ color: COLORS.inkSoft }} className="text-xs">
+              {isInterval
+                ? `Se paga cada ${ob.intervalDays} días · próximo: ${formatDateHuman(info.dueDate)}`
+                : `Vence el día ${ob.dueDay} de cada mes`}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button onClick={() => onEdit(ob.id)} style={{ color: COLORS.inkSoft }}><Pencil size={15} /></button>
@@ -929,7 +939,7 @@ function ObligationCard({ ob, info, payments, onMarkPaid, onUndo, onEdit, onDele
 
       {hasCuotas && (
         <>
-          <ProgressBar value={Number(ob.totalAmount) - Number(ob.remainingAmount)} max={Number(ob.totalAmount)} color={COLORS.ochre} />
+          <ProgressBar value={Number(ob.totalAmount) - Number(ob.remainingAmount)} max={Number(ob.totalAmount)} color={catInfo.color} />
           <p style={{ color: COLORS.inkSoft }} className="text-xs mt-2">
             Cuota {Math.min(Number(ob.cuotasPagadas) + (info.status === 'terminado' ? 0 : 1), Number(ob.totalCuotas))} de {ob.totalCuotas} · faltan {Math.max(0, Number(ob.totalCuotas) - Number(ob.cuotasPagadas))}
           </p>
@@ -983,13 +993,13 @@ function PagosPage({ obligationStatuses, obligationPayments, onAdd, onMarkPaid, 
       <div className="flex items-center justify-between mb-4">
         <h2 style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-xl font-semibold">Pagos</h2>
       </div>
-      <button onClick={onAdd} style={{ background: COLORS.ochreSoft, color: COLORS.ochre }} className="w-full py-3 rounded-xl font-medium flex items-center justify-center gap-2 mb-5">
+      <button onClick={onAdd} style={{ background: COLORS.ochreSoft, color: COLORS.ochre }} className="w-full lg:w-auto py-3 px-6 rounded-xl font-medium flex items-center justify-center gap-2 mb-5">
         <Plus size={16} /> Nueva deuda o pago fijo
       </button>
 
       <p style={{ color: COLORS.ink }} className="font-medium mb-2">Deudas</p>
       {deudas.length === 0 && <p style={{ color: COLORS.inkSoft }} className="text-sm mb-4">No tienen deudas activas.</p>}
-      <div className="flex flex-col gap-3 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
         {deudas.map(({ ob, info }) => (
           <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
         ))}
@@ -997,7 +1007,7 @@ function PagosPage({ obligationStatuses, obligationPayments, onAdd, onMarkPaid, 
 
       <p style={{ color: COLORS.ink }} className="font-medium mb-2">Servicios y pagos fijos</p>
       {servicios.length === 0 && <p style={{ color: COLORS.inkSoft }} className="text-sm mb-4">No tienen servicios registrados (luz, agua, internet, pensión...).</p>}
-      <div className="flex flex-col gap-3 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
         {servicios.map(({ ob, info }) => (
           <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
         ))}
@@ -1006,7 +1016,7 @@ function PagosPage({ obligationStatuses, obligationPayments, onAdd, onMarkPaid, 
       {terminadas.length > 0 && (
         <>
           <p style={{ color: COLORS.ink }} className="font-medium mb-2">Terminadas</p>
-          <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {terminadas.map(({ ob, info }) => (
               <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
             ))}
@@ -1026,15 +1036,15 @@ function MetasPage({ goals, onAdd, onAportar, onRemove }) {
       <div className="flex items-center justify-between mb-4">
         <h2 style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-xl font-semibold">Metas de ahorro</h2>
       </div>
-      <button onClick={onAdd} style={{ background: COLORS.tealSoft, color: COLORS.teal }} className="w-full py-3 rounded-xl font-medium flex items-center justify-center gap-2 mb-4">
+      <button onClick={onAdd} style={{ background: COLORS.tealSoft, color: COLORS.teal }} className="w-full lg:w-auto py-3 px-6 rounded-xl font-medium flex items-center justify-center gap-2 mb-4">
         <Plus size={16} /> Nueva meta
       </button>
 
       {goals.length === 0 && <p style={{ color: COLORS.inkSoft }} className="text-sm">Aún no tienen metas. ¡Creen la primera!</p>}
 
-      <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
         {goals.map(g => (
-          <div key={g.id} style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }} className="rounded-xl p-4">
+          <div key={g.id} style={{ background: COLORS.card, border: `1px solid ${COLORS.line}`, borderLeft: `4px solid ${COLORS.teal}` }} className="rounded-xl p-4">
             <div className="flex items-center justify-between mb-2">
               <p style={{ color: COLORS.ink }} className="font-medium">{g.name}</p>
               <button onClick={() => onRemove(g.id)} style={{ color: COLORS.inkSoft }}><Trash2 size={15} /></button>
