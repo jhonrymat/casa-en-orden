@@ -1,0 +1,10 @@
+{
+  "setupDone": false,
+  "profiles": [],
+  "incomes": [],
+  "expenses": [],
+  "obligations": [],
+  "obligationPayments": [],
+  "goals": [],
+  "goalContributions": []
+}

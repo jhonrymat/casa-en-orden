@@ -1,14 +1,12 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
-
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  server: {
-    // Durante desarrollo local (npm run dev), reenvía las llamadas /api
-    // al servidor Express que corre en el puerto 3001 (npm run dev:server).
-    proxy: {
-      '/api': 'http://localhost:3001',
-    },
-  },
-});
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Casa en orden</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
