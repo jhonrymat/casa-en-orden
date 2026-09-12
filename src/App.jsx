@@ -9,6 +9,7 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip
 } from 'recharts';
 import { DEFAULT_DATA } from './lib/defaultData.js';
+import { APP_NAME } from './lib/appName.js';
 import { loadData, saveData, loadSession, saveSession, clearSession, uploadAttachment, getPushStatus, enablePushNotifications } from './lib/storage.js';
 
 /* ---------------------------------------------------------
@@ -157,6 +158,25 @@ function statusMeta(status, diffDays) {
    Small UI primitives
 --------------------------------------------------------- */
 function Modal({ open, onClose, title, children }) {
+  // Truco para que el botón físico "atrás" de Android cierre esta ventana
+  // en vez de cerrar toda la app: al abrir, agregamos una entrada falsa al
+  // historial del navegador; "atrás" la consume y dispara popstate, que
+  // cerramos aquí. Si se cierra con la X (no con "atrás"), consumimos esa
+  // entrada nosotros mismos para no dejar basura en el historial.
+  useEffect(() => {
+    if (!open) return;
+    window.history.pushState({ casaEnOrdenModal: true }, '');
+    const handlePopState = () => onClose();
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      if (window.history.state && window.history.state.casaEnOrdenModal) {
+        window.history.back();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   if (!open) return null;
   return (
     <div
@@ -250,6 +270,24 @@ function ConfirmRow({ onConfirm, onCancel, label }) {
 
 // Campo para adjuntar una foto o PDF del comprobante de pago. Sube el
 // archivo apenas se selecciona y guarda la URL resultante vía onUploaded.
+// Muestra el comprobante DENTRO de la app (no abre una pestaña aparte), así
+// el botón de cerrar y el botón "atrás" de Android funcionan como se espera.
+function AttachmentViewer({ url }) {
+  const isPdf = url.toLowerCase().endsWith('.pdf');
+  return (
+    <div>
+      {isPdf ? (
+        <iframe src={url} title="Comprobante" className="w-full rounded-lg" style={{ height: '65vh', border: `1px solid ${COLORS.line}` }} />
+      ) : (
+        <img src={url} alt="Comprobante" className="w-full rounded-lg" />
+      )}
+      <a href={url} target="_blank" rel="noreferrer" style={{ color: COLORS.teal }} className="text-sm underline mt-3 inline-block">
+        Abrir en una pestaña aparte
+      </a>
+    </div>
+  );
+}
+
 function AttachmentField({ onUploaded, onClear, currentUrl }) {
   const [fileName, setFileName] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -330,7 +368,7 @@ function Onboarding({ onDone }) {
       <div style={{ background: COLORS.card }} className="w-full max-w-sm rounded-2xl p-6">
         <div className="flex items-center gap-2 mb-1">
           <PiggyBank size={26} color={COLORS.teal} />
-          <h1 style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-2xl font-semibold">Casa en orden</h1>
+          <h1 style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-2xl font-semibold">{APP_NAME}</h1>
         </div>
         <p style={{ color: COLORS.inkSoft }} className="text-sm mb-5">Antes de empezar, crea los dos perfiles del hogar. El PIN es solo para diferenciar quién registra cada movimiento.</p>
 
@@ -381,7 +419,7 @@ function Login({ profiles, onLogin }) {
       <div style={{ background: COLORS.card }} className="w-full max-w-sm rounded-2xl p-6">
         <div className="flex items-center gap-2 mb-6">
           <PiggyBank size={26} color={COLORS.teal} />
-          <h1 style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-2xl font-semibold">Casa en orden</h1>
+          <h1 style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-2xl font-semibold">{APP_NAME}</h1>
         </div>
 
         {!selected ? (
@@ -440,6 +478,7 @@ export default function App() {
   const [month, setMonth] = useState(monthKey());
   const [pushStatus, setPushStatus] = useState(null);
   const [pushDismissed, setPushDismissed] = useState(false);
+  const [viewingAttachment, setViewingAttachment] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -647,7 +686,7 @@ export default function App() {
       <div style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.line}` }} className="sticky top-0 z-10 px-5 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <PiggyBank size={22} color={COLORS.teal} />
-          <span style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-lg font-semibold">Casa en orden</span>
+          <span style={{ color: COLORS.ink, fontFamily: 'Fraunces, serif' }} className="text-lg font-semibold">{APP_NAME}</span>
         </div>
         <button onClick={handleLogout} style={{ color: COLORS.inkSoft }} className="flex items-center gap-1 text-sm">
           {me?.name} <LogOut size={16} />
@@ -692,6 +731,7 @@ export default function App() {
             onAddExpense={() => setModal('gasto')}
             onRemoveIncome={removeIncome}
             onRemoveExpense={removeExpense}
+            onViewAttachment={setViewingAttachment}
           />
         )}
         {page === 'pagos' && (
@@ -704,6 +744,7 @@ export default function App() {
             onUndo={undoObligationPayment}
             onEdit={(id) => setModal(`editarObligacion:${id}`)}
             onDelete={deleteObligation}
+            onViewAttachment={setViewingAttachment}
           />
         )}
         {page === 'metas' && (
@@ -772,6 +813,10 @@ export default function App() {
           />
         </Modal>
       )}
+
+      <Modal open={!!viewingAttachment} onClose={() => setViewingAttachment(null)} title="Comprobante">
+        {viewingAttachment && <AttachmentViewer url={viewingAttachment} />}
+      </Modal>
     </div>
   );
 }
@@ -908,7 +953,7 @@ function ResumenPage({ month, setMonth, availableMonths, totalIncome, totalExpen
 /* ---------------------------------------------------------
    Movimientos page
 --------------------------------------------------------- */
-function MovimientosPage({ month, setMonth, availableMonths, incomes, expenses, profiles, onAddIncome, onAddExpense, onRemoveIncome, onRemoveExpense }) {
+function MovimientosPage({ month, setMonth, availableMonths, incomes, expenses, profiles, onAddIncome, onAddExpense, onRemoveIncome, onRemoveExpense, onViewAttachment }) {
   const nameOf = (id) => profiles.find(p => p.id === id)?.name || '—';
   const items = [
     ...incomes.map(i => ({ ...i, kind: 'ingreso' })),
@@ -955,9 +1000,9 @@ function MovimientosPage({ month, setMonth, availableMonths, incomes, expenses, 
                   </p>
                   <p style={{ color: COLORS.inkSoft }} className="text-xs truncate">{item.date} · {nameOf(item.personId)}{item.description ? ` · ${item.description}` : ''}</p>
                   {item.attachmentUrl && (
-                    <a href={item.attachmentUrl} target="_blank" rel="noreferrer" style={{ color: COLORS.teal }} className="text-xs underline flex items-center gap-1 mt-0.5">
+                    <button onClick={() => onViewAttachment(item.attachmentUrl)} style={{ color: COLORS.teal }} className="text-xs underline flex items-center gap-1 mt-0.5">
                       <Paperclip size={11} /> Ver comprobante
-                    </a>
+                    </button>
                   )}
                 </div>
               </div>
@@ -986,7 +1031,7 @@ function MovimientosPage({ month, setMonth, availableMonths, incomes, expenses, 
 /* ---------------------------------------------------------
    Pagos page (deudas y servicios fijos con vencimiento)
 --------------------------------------------------------- */
-function ObligationCard({ ob, info, payments, profiles, onMarkPaid, onUndo, onEdit, onDelete }) {
+function ObligationCard({ ob, info, payments, profiles, onMarkPaid, onUndo, onEdit, onDelete, onViewAttachment }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const meta = statusMeta(info.status, info.diffDays);
@@ -1090,9 +1135,9 @@ function ObligationCard({ ob, info, payments, profiles, onMarkPaid, onUndo, onEd
                   <span style={{ color: COLORS.inkSoft }} className="truncate">
                     {p.date} · {nameOf(p.personId)}
                     {p.attachmentUrl && (
-                      <a href={p.attachmentUrl} target="_blank" rel="noreferrer" style={{ color: COLORS.teal }} className="underline ml-1">
+                      <button onClick={() => onViewAttachment(p.attachmentUrl)} style={{ color: COLORS.teal }} className="underline ml-1">
                         📎
-                      </a>
+                      </button>
                     )}
                   </span>
                   <span style={{ color: COLORS.ink }} className="font-medium shrink-0">{formatCOP(p.amount)}</span>
@@ -1106,7 +1151,7 @@ function ObligationCard({ ob, info, payments, profiles, onMarkPaid, onUndo, onEd
   );
 }
 
-function PagosPage({ obligationStatuses, obligationPayments, profiles, onAdd, onMarkPaid, onUndo, onEdit, onDelete }) {
+function PagosPage({ obligationStatuses, obligationPayments, profiles, onAdd, onMarkPaid, onUndo, onEdit, onDelete, onViewAttachment }) {
   const deudas = obligationStatuses.filter(x => x.ob.type === 'deuda' && x.ob.active)
     .sort((a, b) => a.info.diffDays - b.info.diffDays);
   const servicios = obligationStatuses.filter(x => x.ob.type === 'servicio' && x.ob.active)
@@ -1126,7 +1171,7 @@ function PagosPage({ obligationStatuses, obligationPayments, profiles, onAdd, on
       {deudas.length === 0 && <p style={{ color: COLORS.inkSoft }} className="text-sm mb-4">No tienen deudas activas.</p>}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
         {deudas.map(({ ob, info }) => (
-          <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
+          <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} onViewAttachment={onViewAttachment} />
         ))}
       </div>
 
@@ -1134,7 +1179,7 @@ function PagosPage({ obligationStatuses, obligationPayments, profiles, onAdd, on
       {servicios.length === 0 && <p style={{ color: COLORS.inkSoft }} className="text-sm mb-4">No tienen servicios registrados (luz, agua, internet, pensión...).</p>}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
         {servicios.map(({ ob, info }) => (
-          <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
+          <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} onViewAttachment={onViewAttachment} />
         ))}
       </div>
 
@@ -1143,7 +1188,7 @@ function PagosPage({ obligationStatuses, obligationPayments, profiles, onAdd, on
           <p style={{ color: COLORS.ink }} className="font-medium mb-2">Terminadas</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {terminadas.map(({ ob, info }) => (
-              <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
+              <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} onViewAttachment={onViewAttachment} />
             ))}
           </div>
         </>

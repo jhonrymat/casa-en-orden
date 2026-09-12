@@ -117,12 +117,12 @@ async function sendDailySummary() {
   const vencidos = relevant.filter((x) => x.info.status === 'vencido');
   const proximos = relevant.filter((x) => x.info.status === 'proximo');
 
-  let body = '';
+  let body = 'Un paso más cerca de nuestra meta 💛 ';
   if (vencidos.length > 0) body += `Vencido: ${vencidos.map((x) => x.ob.name).join(', ')}. `;
   if (proximos.length > 0) body += `Por vencer: ${proximos.map((x) => x.ob.name).join(', ')}.`;
 
   const payload = JSON.stringify({
-    title: 'Casa en orden — pagos pendientes',
+    title: '🏡 Construyendo Nuestro Sueño',
     body: body.trim(),
     url: '/',
   });
