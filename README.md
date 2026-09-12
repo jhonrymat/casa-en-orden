@@ -73,12 +73,13 @@ mostrará el aviso para activar notificaciones.
 
 ## 5. Dejarlo corriendo siempre (pm2)
 
-pm2 no lee el archivo `.env` automáticamente para procesos ya definidos, así
-que arráncalo indicándole que cargue esas variables:
+El propio servidor carga el archivo `.env` automáticamente al arrancar
+(usando la librería `dotenv`), así que no hay que hacer nada especial con
+pm2 para eso:
 
 ```bash
 npm install -g pm2
-pm2 start server/index.js --name casa-en-orden --env-file .env
+pm2 start server/index.js --name casa-en-orden
 pm2 save
 pm2 startup        # sigue la instrucción que te imprime, para que arranque
                     # automáticamente si el VPS se reinicia
