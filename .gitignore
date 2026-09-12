@@ -1,7 +1,10 @@
 node_modules
 dist
 *.log
+.env
 
 # Nunca subir datos reales del hogar al repositorio público
 data/data.json
 data/backups/
+data/uploads/
+data/push-subscriptions.json

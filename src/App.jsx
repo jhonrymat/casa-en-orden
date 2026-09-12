@@ -3,13 +3,13 @@ import {
   Zap, GraduationCap, ShoppingCart, Car, CreditCard, HeartPulse, Smile,
   MoreHorizontal, Plus, LogOut, Wallet, Target, X, Trash2, ArrowUpCircle,
   ArrowDownCircle, PiggyBank, Lock, User, ChevronRight, Calendar, Pencil,
-  RotateCcw, CheckCircle2, AlertCircle, Clock
+  RotateCcw, CheckCircle2, AlertCircle, Clock, Paperclip, Bell
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip
 } from 'recharts';
 import { DEFAULT_DATA } from './lib/defaultData.js';
-import { loadData, saveData, loadSession, saveSession, clearSession } from './lib/storage.js';
+import { loadData, saveData, loadSession, saveSession, clearSession, uploadAttachment, getPushStatus, enablePushNotifications } from './lib/storage.js';
 
 /* ---------------------------------------------------------
    Tokens & helpers
@@ -248,6 +248,54 @@ function ConfirmRow({ onConfirm, onCancel, label }) {
   );
 }
 
+// Campo para adjuntar una foto o PDF del comprobante de pago. Sube el
+// archivo apenas se selecciona y guarda la URL resultante vía onUploaded.
+function AttachmentField({ onUploaded, onClear, currentUrl }) {
+  const [fileName, setFileName] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError('');
+    setFileName(file.name);
+    setUploading(true);
+    try {
+      const url = await uploadAttachment(file);
+      onUploaded(url);
+    } catch (err) {
+      setError(err.message || 'No se pudo subir el archivo');
+      setFileName('');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="mb-3">
+      <label style={{ color: COLORS.inkSoft }} className="block text-sm mb-1">Comprobante (opcional)</label>
+      {currentUrl ? (
+        <div className="flex items-center justify-between text-sm" style={{ color: COLORS.teal }}>
+          <a href={currentUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1 underline">
+            <Paperclip size={14} /> Ver comprobante adjunto
+          </a>
+          <button onClick={onClear} style={{ color: COLORS.inkSoft }}><X size={15} /></button>
+        </div>
+      ) : (
+        <>
+          <label style={{ border: `1px dashed ${COLORS.line}`, color: COLORS.inkSoft }} className="flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm cursor-pointer">
+            <Paperclip size={15} />
+            {uploading ? 'Subiendo…' : (fileName || 'Adjuntar foto o PDF')}
+            <input type="file" accept="image/*,application/pdf" className="hidden" onChange={handleChange} disabled={uploading} />
+          </label>
+          {error && <p style={{ color: COLORS.rust }} className="text-xs mt-1">{error}</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------
    Onboarding
 --------------------------------------------------------- */
@@ -390,6 +438,8 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [saveError, setSaveError] = useState('');
   const [month, setMonth] = useState(monthKey());
+  const [pushStatus, setPushStatus] = useState(null);
+  const [pushDismissed, setPushDismissed] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -402,6 +452,20 @@ export default function App() {
       setLoading(false);
     })();
   }, []);
+
+  useEffect(() => {
+    if (!profileId) return;
+    getPushStatus().then(setPushStatus);
+  }, [profileId]);
+
+  const handleEnablePush = async () => {
+    try {
+      await enablePushNotifications();
+      setPushStatus((s) => ({ ...s, subscribed: true }));
+    } catch (e) {
+      setSaveError(e.message || 'No se pudo activar la notificación.');
+    }
+  };
 
   const persist = useCallback(async (next) => {
     setData(next);
@@ -503,7 +567,7 @@ export default function App() {
       expenses: data.expenses.filter(e => !expenseIds.has(e.id)),
     });
   };
-  const markObligationPaid = (obligationId, amount, date, personId) => {
+  const markObligationPaid = (obligationId, amount, date, personId, attachmentUrl) => {
     const ob = data.obligations.find(o => o.id === obligationId);
     if (!ob) return;
     if (Number(amount) > computeAvailableBalance(data)) {
@@ -512,8 +576,8 @@ export default function App() {
     }
     const period = monthKey(date);
     const category = ob.type === 'deuda' ? 'deudas' : ob.category;
-    const expense = { id: uid(), personId, category, amount: Number(amount), date, description: ob.name };
-    const payment = { id: uid(), obligationId, period, amount: Number(amount), date, expenseId: expense.id };
+    const expense = { id: uid(), personId, category, amount: Number(amount), date, description: ob.name, source: 'obligacion', attachmentUrl: attachmentUrl || null };
+    const payment = { id: uid(), obligationId, period, amount: Number(amount), date, personId, attachmentUrl: attachmentUrl || null, expenseId: expense.id };
 
     const obligations = data.obligations.map(o => {
       if (o.id !== obligationId || o.type !== 'deuda') return o;
@@ -594,6 +658,18 @@ export default function App() {
         <div style={{ background: COLORS.rustSoft, color: COLORS.rust }} className="mx-5 mt-3 p-3 rounded-lg text-sm">{saveError}</div>
       )}
 
+      {pushStatus && pushStatus.supported && pushStatus.serverEnabled && !pushStatus.subscribed && !pushDismissed && (
+        <div style={{ background: COLORS.tealSoft }} className="mx-5 mt-3 p-3 rounded-lg text-sm flex items-center justify-between gap-3">
+          <span style={{ color: COLORS.teal }} className="flex items-center gap-2">
+            <Bell size={15} /> Activa el aviso diario de pagos por vencer
+          </span>
+          <div className="flex items-center gap-3 shrink-0">
+            <button onClick={handleEnablePush} style={{ color: COLORS.teal }} className="text-sm font-semibold">Activar</button>
+            <button onClick={() => setPushDismissed(true)} style={{ color: COLORS.teal }}><X size={15} /></button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-md lg:max-w-6xl mx-auto px-5 pt-4">
         {page === 'resumen' && (
           <ResumenPage
@@ -622,6 +698,7 @@ export default function App() {
           <PagosPage
             obligationStatuses={obligationStatuses}
             obligationPayments={data.obligationPayments}
+            profiles={data.profiles}
             onAdd={() => setModal('nuevaObligacion')}
             onMarkPaid={(id) => setModal(`marcarPago:${id}`)}
             onUndo={undoObligationPayment}
@@ -632,6 +709,8 @@ export default function App() {
         {page === 'metas' && (
           <MetasPage
             goals={data.goals}
+            goalContributions={data.goalContributions}
+            profiles={data.profiles}
             onAdd={() => setModal('meta')}
             onAportar={(id) => setModal(`aporteMeta:${id}`)}
             onRemove={removeGoal}
@@ -675,7 +754,7 @@ export default function App() {
             profiles={data.profiles}
             defaultPerson={profileId}
             availableBalance={availableBalance}
-            onSubmit={({ amount, date, personId }) => { markObligationPaid(modalObligation.id, amount, date, personId); setModal(null); }}
+            onSubmit={({ amount, date, personId, attachmentUrl }) => { markObligationPaid(modalObligation.id, amount, date, personId, attachmentUrl); setModal(null); }}
           />
         )}
       </Modal>
@@ -860,6 +939,7 @@ function MovimientosPage({ month, setMonth, availableMonths, incomes, expenses, 
           const isIncome = item.kind === 'ingreso';
           const cat = !isIncome ? catDef(item.category) : null;
           const Icon = isIncome ? ArrowUpCircle : (cat ? cat.icon : MoreHorizontal);
+          const isObligationPayment = !isIncome && item.source === 'obligacion';
           return (
             <div key={item.id} style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }} className="rounded-xl p-3 flex items-center justify-between">
               <div className="flex items-center gap-3 min-w-0">
@@ -867,19 +947,33 @@ function MovimientosPage({ month, setMonth, availableMonths, incomes, expenses, 
                   <Icon size={16} />
                 </span>
                 <div className="min-w-0">
-                  <p style={{ color: COLORS.ink }} className="text-sm font-medium truncate">
+                  <p style={{ color: COLORS.ink }} className="text-sm font-medium truncate flex items-center gap-2">
                     {isIncome ? (INCOME_TYPES.find(t => t.id === item.type)?.label || 'Ingreso') : cat.label}
+                    {isObligationPayment && (
+                      <span style={{ background: COLORS.bgAlt, color: COLORS.inkSoft }} className="text-[10px] px-1.5 py-0.5 rounded-full font-normal shrink-0">Pago fijo</span>
+                    )}
                   </p>
                   <p style={{ color: COLORS.inkSoft }} className="text-xs truncate">{item.date} · {nameOf(item.personId)}{item.description ? ` · ${item.description}` : ''}</p>
+                  {item.attachmentUrl && (
+                    <a href={item.attachmentUrl} target="_blank" rel="noreferrer" style={{ color: COLORS.teal }} className="text-xs underline flex items-center gap-1 mt-0.5">
+                      <Paperclip size={11} /> Ver comprobante
+                    </a>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <span style={{ color: isIncome ? COLORS.teal : COLORS.rust }} className="text-sm font-medium">
                   {isIncome ? '+' : '-'}{formatCOP(item.amount)}
                 </span>
-                <button onClick={() => isIncome ? onRemoveIncome(item.id) : onRemoveExpense(item.id)} style={{ color: COLORS.inkSoft }}>
-                  <Trash2 size={15} />
-                </button>
+                {isObligationPayment ? (
+                  <span style={{ color: COLORS.inkSoft }} title="Para deshacer este pago, ve a la pestaña Pagos">
+                    <Lock size={14} />
+                  </span>
+                ) : (
+                  <button onClick={() => isIncome ? onRemoveIncome(item.id) : onRemoveExpense(item.id)} style={{ color: COLORS.inkSoft }}>
+                    <Trash2 size={15} />
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -892,8 +986,9 @@ function MovimientosPage({ month, setMonth, availableMonths, incomes, expenses, 
 /* ---------------------------------------------------------
    Pagos page (deudas y servicios fijos con vencimiento)
 --------------------------------------------------------- */
-function ObligationCard({ ob, info, payments, onMarkPaid, onUndo, onEdit, onDelete }) {
+function ObligationCard({ ob, info, payments, profiles, onMarkPaid, onUndo, onEdit, onDelete }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const meta = statusMeta(info.status, info.diffDays);
   const Icon = meta.Icon;
 
@@ -903,6 +998,11 @@ function ObligationCard({ ob, info, payments, onMarkPaid, onUndo, onEdit, onDele
 
   const canMarkPaid = isInterval ? true : !info.paidThisPeriod;
   const canUndo = !!info.lastPayment && (isInterval ? true : info.paidThisPeriod);
+
+  const nameOf = (id) => profiles.find(p => p.id === id)?.name || '—';
+  const history = payments
+    .filter(p => p.obligationId === ob.id)
+    .sort((a, b) => b.date.localeCompare(a.date));
 
   // Color e ícono de categoría: para deudas siempre el color de "Deudas y
   // tarjetas"; para servicios, el de la categoría elegida (luz, pensión...).
@@ -977,11 +1077,36 @@ function ObligationCard({ ob, info, payments, onMarkPaid, onUndo, onEdit, onDele
           )}
         </div>
       )}
+
+      {history.length > 0 && (
+        <div className="mt-3" style={{ borderTop: `1px solid ${COLORS.line}`, paddingTop: 10 }}>
+          <button onClick={() => setShowHistory(s => !s)} style={{ color: COLORS.inkSoft }} className="text-xs font-medium">
+            {showHistory ? 'Ocultar historial' : `Ver historial (${history.length} pago${history.length === 1 ? '' : 's'})`}
+          </button>
+          {showHistory && (
+            <div className="flex flex-col gap-1.5 mt-2">
+              {history.map(p => (
+                <div key={p.id} className="flex items-center justify-between text-xs gap-2">
+                  <span style={{ color: COLORS.inkSoft }} className="truncate">
+                    {p.date} · {nameOf(p.personId)}
+                    {p.attachmentUrl && (
+                      <a href={p.attachmentUrl} target="_blank" rel="noreferrer" style={{ color: COLORS.teal }} className="underline ml-1">
+                        📎
+                      </a>
+                    )}
+                  </span>
+                  <span style={{ color: COLORS.ink }} className="font-medium shrink-0">{formatCOP(p.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function PagosPage({ obligationStatuses, obligationPayments, onAdd, onMarkPaid, onUndo, onEdit, onDelete }) {
+function PagosPage({ obligationStatuses, obligationPayments, profiles, onAdd, onMarkPaid, onUndo, onEdit, onDelete }) {
   const deudas = obligationStatuses.filter(x => x.ob.type === 'deuda' && x.ob.active)
     .sort((a, b) => a.info.diffDays - b.info.diffDays);
   const servicios = obligationStatuses.filter(x => x.ob.type === 'servicio' && x.ob.active)
@@ -1001,7 +1126,7 @@ function PagosPage({ obligationStatuses, obligationPayments, onAdd, onMarkPaid, 
       {deudas.length === 0 && <p style={{ color: COLORS.inkSoft }} className="text-sm mb-4">No tienen deudas activas.</p>}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
         {deudas.map(({ ob, info }) => (
-          <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
+          <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
         ))}
       </div>
 
@@ -1009,7 +1134,7 @@ function PagosPage({ obligationStatuses, obligationPayments, onAdd, onMarkPaid, 
       {servicios.length === 0 && <p style={{ color: COLORS.inkSoft }} className="text-sm mb-4">No tienen servicios registrados (luz, agua, internet, pensión...).</p>}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
         {servicios.map(({ ob, info }) => (
-          <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
+          <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
         ))}
       </div>
 
@@ -1018,7 +1143,7 @@ function PagosPage({ obligationStatuses, obligationPayments, onAdd, onMarkPaid, 
           <p style={{ color: COLORS.ink }} className="font-medium mb-2">Terminadas</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {terminadas.map(({ ob, info }) => (
-              <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
+              <ObligationCard key={ob.id} ob={ob} info={info} payments={obligationPayments} profiles={profiles} onMarkPaid={onMarkPaid} onUndo={onUndo} onEdit={onEdit} onDelete={onDelete} />
             ))}
           </div>
         </>
@@ -1030,7 +1155,50 @@ function PagosPage({ obligationStatuses, obligationPayments, onAdd, onMarkPaid, 
 /* ---------------------------------------------------------
    Metas page
 --------------------------------------------------------- */
-function MetasPage({ goals, onAdd, onAportar, onRemove }) {
+function GoalCard({ g, contributions, profiles, onAportar, onRemove }) {
+  const [showHistory, setShowHistory] = useState(false);
+  const nameOf = (id) => profiles.find(p => p.id === id)?.name || '—';
+  const history = contributions
+    .filter(c => c.goalId === g.id)
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  return (
+    <div style={{ background: COLORS.card, border: `1px solid ${COLORS.line}`, borderLeft: `4px solid ${COLORS.teal}` }} className="rounded-xl p-4">
+      <div className="flex items-center justify-between mb-2">
+        <p style={{ color: COLORS.ink }} className="font-medium">{g.name}</p>
+        <button onClick={() => onRemove(g.id)} style={{ color: COLORS.inkSoft }}><Trash2 size={15} /></button>
+      </div>
+      <ProgressBar value={g.savedAmount} max={g.targetAmount} color={COLORS.teal} />
+      <div className="flex justify-between text-sm mt-2">
+        <span style={{ color: COLORS.inkSoft }}>{formatCOP(g.savedAmount)} de {formatCOP(g.targetAmount)}</span>
+        {g.targetDate && <span style={{ color: COLORS.inkSoft }}>Meta: {g.targetDate}</span>}
+      </div>
+      <button onClick={() => onAportar(g.id)} style={{ color: COLORS.teal }} className="text-sm font-medium mt-3">
+        + Apartar dinero
+      </button>
+
+      {history.length > 0 && (
+        <div className="mt-3" style={{ borderTop: `1px solid ${COLORS.line}`, paddingTop: 10 }}>
+          <button onClick={() => setShowHistory(s => !s)} style={{ color: COLORS.inkSoft }} className="text-xs font-medium">
+            {showHistory ? 'Ocultar historial' : `Ver historial (${history.length} aporte${history.length === 1 ? '' : 's'})`}
+          </button>
+          {showHistory && (
+            <div className="flex flex-col gap-1.5 mt-2">
+              {history.map(c => (
+                <div key={c.id} className="flex items-center justify-between text-xs">
+                  <span style={{ color: COLORS.inkSoft }}>{c.date} · {nameOf(c.personId)}</span>
+                  <span style={{ color: COLORS.ink }} className="font-medium">{formatCOP(c.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetasPage({ goals, goalContributions, profiles, onAdd, onAportar, onRemove }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -1044,20 +1212,7 @@ function MetasPage({ goals, onAdd, onAportar, onRemove }) {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
         {goals.map(g => (
-          <div key={g.id} style={{ background: COLORS.card, border: `1px solid ${COLORS.line}`, borderLeft: `4px solid ${COLORS.teal}` }} className="rounded-xl p-4">
-            <div className="flex items-center justify-between mb-2">
-              <p style={{ color: COLORS.ink }} className="font-medium">{g.name}</p>
-              <button onClick={() => onRemove(g.id)} style={{ color: COLORS.inkSoft }}><Trash2 size={15} /></button>
-            </div>
-            <ProgressBar value={g.savedAmount} max={g.targetAmount} color={COLORS.teal} />
-            <div className="flex justify-between text-sm mt-2">
-              <span style={{ color: COLORS.inkSoft }}>{formatCOP(g.savedAmount)} de {formatCOP(g.targetAmount)}</span>
-              {g.targetDate && <span style={{ color: COLORS.inkSoft }}>Meta: {g.targetDate}</span>}
-            </div>
-            <button onClick={() => onAportar(g.id)} style={{ color: COLORS.teal }} className="text-sm font-medium mt-3">
-              + Apartar dinero
-            </button>
-          </div>
+          <GoalCard key={g.id} g={g} contributions={goalContributions} profiles={profiles} onAportar={onAportar} onRemove={onRemove} />
         ))}
       </div>
     </div>
@@ -1108,6 +1263,7 @@ function ExpenseForm({ defaultPerson, profiles, availableBalance, onSubmit }) {
   const [category, setCategory] = useState(CATEGORY_DEFS[0].id);
   const [date, setDate] = useState(todayStr());
   const [description, setDescription] = useState('');
+  const [attachmentUrl, setAttachmentUrl] = useState(null);
   const exceeds = Number(amount) > availableBalance;
 
   return (
@@ -1134,7 +1290,8 @@ function ExpenseForm({ defaultPerson, profiles, availableBalance, onSubmit }) {
       <Field label="Nota (opcional)">
         <TextInput value={description} onChange={e => setDescription(e.target.value)} placeholder="Ej: mercado de la semana" />
       </Field>
-      <PrimaryButton disabled={!amount || Number(amount) <= 0 || exceeds} onClick={() => onSubmit({ personId, amount: Number(amount), category, date, description })}>
+      <AttachmentField currentUrl={attachmentUrl} onUploaded={setAttachmentUrl} onClear={() => setAttachmentUrl(null)} />
+      <PrimaryButton disabled={!amount || Number(amount) <= 0 || exceeds} onClick={() => onSubmit({ personId, amount: Number(amount), category, date, description, attachmentUrl })}>
         Guardar gasto
       </PrimaryButton>
     </div>
@@ -1357,6 +1514,7 @@ function MarkPaidForm({ ob, profiles, defaultPerson, availableBalance, onSubmit 
   const [personId, setPersonId] = useState(defaultPerson);
   const [amount, setAmount] = useState(String(ob.cuotaAmount || ''));
   const [date, setDate] = useState(todayStr());
+  const [attachmentUrl, setAttachmentUrl] = useState(null);
   const exceeds = Number(amount) > availableBalance;
 
   return (
@@ -1375,8 +1533,9 @@ function MarkPaidForm({ ob, profiles, defaultPerson, availableBalance, onSubmit 
       <Field label="Fecha del pago">
         <TextInput type="date" value={date} onChange={e => setDate(e.target.value)} />
       </Field>
+      <AttachmentField currentUrl={attachmentUrl} onUploaded={setAttachmentUrl} onClear={() => setAttachmentUrl(null)} />
       <p style={{ color: COLORS.inkSoft }} className="text-xs mb-3">Esto también se sumará automáticamente a los gastos del mes.</p>
-      <PrimaryButton disabled={!amount || Number(amount) <= 0 || exceeds} onClick={() => onSubmit({ amount: Number(amount), date, personId })}>
+      <PrimaryButton disabled={!amount || Number(amount) <= 0 || exceeds} onClick={() => onSubmit({ amount: Number(amount), date, personId, attachmentUrl })}>
         Confirmar pago
       </PrimaryButton>
     </div>

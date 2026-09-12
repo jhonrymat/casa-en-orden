@@ -44,11 +44,41 @@ Abre `http://IP_DE_TU_VPS:3001` en el navegador. Deberías ver la pantalla de
 creación de los dos perfiles. Cuando confirmes que funciona, detén el proceso
 (Ctrl+C) y sigue al paso 4 para dejarlo corriendo permanentemente.
 
-## 4. Dejarlo corriendo siempre (pm2)
+## 4. Configurar las notificaciones push (opcional, pero recomendado)
+
+Esto le permite avisar por celular (aunque tengan la app cerrada) todos los
+días a las 8:00am si hay algo vencido o por vencer. Funciona bien en Android;
+en iPhone solo si tienen iOS 16.4+ y la app instalada en pantalla de inicio.
+
+Genera un par de llaves propias para tu servidor (nunca reutilices las de
+otro despliegue):
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+Esto imprime una "Public Key" y una "Private Key". Guárdalas como variables
+de entorno — la forma más simple es un archivo `.env` en la raíz del
+proyecto (ya está en `.gitignore`, nunca se sube a GitHub):
+
+```bash
+cat > .env << 'EOF'
+VAPID_PUBLIC_KEY=pega_aqui_tu_public_key
+VAPID_PRIVATE_KEY=pega_aqui_tu_private_key
+EOF
+```
+
+Si no configuras esto, la app funciona igual de bien — simplemente no se
+mostrará el aviso para activar notificaciones.
+
+## 5. Dejarlo corriendo siempre (pm2)
+
+pm2 no lee el archivo `.env` automáticamente para procesos ya definidos, así
+que arráncalo indicándole que cargue esas variables:
 
 ```bash
 npm install -g pm2
-pm2 start server/index.js --name casa-en-orden
+pm2 start server/index.js --name casa-en-orden --env-file .env
 pm2 save
 pm2 startup        # sigue la instrucción que te imprime, para que arranque
                     # automáticamente si el VPS se reinicia
@@ -60,7 +90,13 @@ pm2 logs casa-en-orden     # ver qué está pasando
 pm2 restart casa-en-orden  # reiniciar (por ejemplo, tras actualizar código)
 ```
 
-## 5. Exponerlo con tu dominio y HTTPS (Nginx + Certbot)
+Para probar que las notificaciones sí funcionan sin esperar a las 8am (con
+al menos un celular ya suscrito desde la app):
+```bash
+curl -X POST http://localhost:3001/api/push/test
+```
+
+## 6. Exponerlo con tu dominio y HTTPS (Nginx + Certbot)
 
 Instala Nginx y Certbot, y crea un archivo de configuración, por ejemplo
 `/etc/nginx/sites-available/casa-en-orden`:
@@ -84,7 +120,7 @@ nginx -t && systemctl reload nginx
 certbot --nginx -d finanzas.tudominio.com
 ```
 
-## 6. Importante: protege el acceso
+## 7. Importante: protege el acceso
 
 El PIN de 4 dígitos dentro de la app es solo para diferenciar quién registró
 cada movimiento — **no es una contraseña de verdad** (no está pensado para
@@ -109,20 +145,21 @@ Recarga Nginx (`systemctl reload nginx`) y listo: el navegador pedirá esa
 contraseña compartida antes de mostrar la app, y luego cada quien entra con
 su perfil y PIN dentro de la app.
 
-## 7. Respaldos fuera del servidor
+## 8. Respaldos fuera del servidor
 
 Los respaldos automáticos en `data/backups/` te protegen de errores dentro
-de la app, pero no de que el disco del VPS falle. Te recomiendo copiar
-`data/data.json` a otro lugar de vez en cuando (tu computador, Google
-Drive, etc.). Un cron simple semanal:
+de la app, pero no de que el disco del VPS falle. Te recomiendo copiar toda
+la carpeta `data/` (incluye `data.json` **y** los comprobantes adjuntos en
+`data/uploads/`, que no tienen respaldo automático) a otro lugar de vez en
+cuando (tu computador, Google Drive, etc.). Un cron simple semanal:
 
 ```bash
 crontab -e
 # agrega esta línea (ajusta la ruta de destino a donde prefieras):
-0 3 * * 0 cp /ruta/a/casa-en-orden/data/data.json /ruta/de/respaldo/data-$(date +\%F).json
+0 3 * * 0 tar -czf /ruta/de/respaldo/casa-en-orden-$(date +\%F).tar.gz -C /ruta/a/casa-en-orden data
 ```
 
-## 8. Cómo actualizar la app más adelante
+## 9. Cómo actualizar la app más adelante
 
 Cuando quieras que te agregue o ajuste algo, súbelo a tu repositorio de
 GitHub desde tu computador (`git add`, `git commit`, `git push`), y luego
@@ -139,7 +176,7 @@ pm2 restart casa-en-orden
 Como `data/data.json` está en `.gitignore`, el `git pull` nunca lo toca —
 tus datos reales quedan intactos en el VPS y nunca pasan por GitHub.
 
-## 9. Si ya habías subido `data.json` con datos reales al repositorio
+## 10. Si ya habías subido `data.json` con datos reales al repositorio
 
 Como el repositorio es público, si el `data.json` con información real
 alcanzó a subirse antes de aplicar el `.gitignore`, hay que quitarlo del
@@ -166,16 +203,24 @@ hacerlo con cuidado.
 
 ```
 casa-en-orden/
+├── .env                    ← llaves VAPID (solo en el VPS, ignorado por git)
 ├── data/
-│   ├── data.example.json ← plantilla vacía, esta sí va al repositorio
-│   ├── data.json          ← datos reales, solo existe en el VPS (ignorado por git)
-│   └── backups/           ← copias de seguridad diarias (ignorado por git)
+│   ├── data.example.json    ← plantilla vacía, esta sí va al repositorio
+│   ├── data.json             ← datos reales, solo existe en el VPS (ignorado)
+│   ├── backups/              ← copias de seguridad diarias (ignorado)
+│   ├── uploads/               ← comprobantes de pago subidos (ignorado)
+│   └── push-subscriptions.json ← celulares suscritos a notificaciones (ignorado)
 ├── server/
-│   └── index.js         ← servidor Express (API + sirve la app)
+│   ├── index.js            ← servidor Express (API, comprobantes, push, cron)
+│   └── obligationStatus.js ← lógica de vencidos/por vencer (para el aviso diario)
+├── public/
+│   ├── manifest.webmanifest ← permite instalar la app en el celular
+│   ├── sw.js                ← service worker (instalación + notificaciones push)
+│   └── icons/
 ├── src/
 │   ├── App.jsx           ← toda la app (pantallas, formularios, lógica)
 │   ├── lib/
-│   │   ├── storage.js     ← habla con la API del servidor
+│   │   ├── storage.js     ← habla con la API del servidor (datos, comprobantes, push)
 │   │   └── defaultData.js
 │   ├── main.jsx
 │   └── index.css
